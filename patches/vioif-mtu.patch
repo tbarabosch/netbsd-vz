@@ -1,0 +1,41 @@
+diff --git a/sys/dev/pci/if_vioif.c b/sys/dev/pci/if_vioif.c
+--- a/sys/dev/pci/if_vioif.c
++++ b/sys/dev/pci/if_vioif.c
+@@ -82,6 +82,7 @@
+ /* Feature bits */
+ #define VIRTIO_NET_F_CSUM		__BIT(0)
+ #define VIRTIO_NET_F_GUEST_CSUM		__BIT(1)
++#define VIRTIO_NET_F_MTU		__BIT(3)
+ #define VIRTIO_NET_F_MAC		__BIT(5)
+ #define VIRTIO_NET_F_GSO		__BIT(6)
+ #define VIRTIO_NET_F_GUEST_TSO4		__BIT(7)
+@@ -129,6 +130,7 @@
+ 	"b\x07" "GUEST_TSO4\0"			\
+ 	"b\x06" "GSO\0"				\
+ 	"b\x05" "MAC\0"				\
++	"b\x03" "MTU\0"				\
+ 	"b\x01" "GUEST_CSUM\0"			\
+ 	"b\x00" "CSUM\0"
+ 
+@@ -510,8 +512,9 @@ vioif_attach(device_t parent, device_t self, void *aux)
+ 	req_flags |= VIRTIO_F_INTR_MSIX;
+ 
+ 	req_features =
+-	    VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ |
+-	    VIRTIO_NET_F_CTRL_RX | VIRTIO_F_NOTIFY_ON_EMPTY;
++	    VIRTIO_NET_F_MTU | VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS |
++	    VIRTIO_NET_F_CTRL_VQ | VIRTIO_NET_F_CTRL_RX |
++	    VIRTIO_F_NOTIFY_ON_EMPTY;
+ 	req_features |= VIRTIO_F_RING_EVENT_IDX;
+ 	req_features |= VIRTIO_NET_F_CTRL_MAC_ADDR;
+ #ifdef VIOIF_MULTIQ
+@@ -657,6 +660,9 @@ vioif_attach(device_t parent, device_t self, void *aux)
+ 	if_attach(ifp);
+ 	if_deferred_start_init(ifp, NULL);
+ 	ether_ifattach(ifp, sc->sc_mac);
++	if (features & VIRTIO_NET_F_MTU)
++		ifp->if_mtu = virtio_read_device_config_2(vsc,
++		    VIRTIO_NET_CONFIG_MTU);
+ 	ether_set_ifflags_cb(&sc->sc_ethercom, vioif_ifflags_cb);
+ 
+ 	return;

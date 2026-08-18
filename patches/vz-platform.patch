@@ -1,0 +1,72 @@
+diff --git a/sys/arch/aarch64/aarch64/locore.S b/sys/arch/aarch64/aarch64/locore.S
+index 8d14973e9b10..b264cc745d90 100644
+--- a/sys/arch/aarch64/aarch64/locore.S
++++ b/sys/arch/aarch64/aarch64/locore.S
+@@ -876,7 +876,11 @@ aarch64_start:
+ 	mov	x2, #L2_SIZE			/* size */
+ 	mov	x3, #L2_SIZE			/* blocksize */
+ 	mov	x4, #LX_BLKPAG_ATTR_NORMAL_WB | LX_BLKPAG_AP_RW
+-	orr	x4, x4, #LX_BLKPAG_UXN | LX_BLKPAG_PXN	/* attr */
++	/*
++	 * The FDT may share an L2 block with the kernel bootstrap mapping.
++	 * Keep the attributes compatible so pmapboot_enter can reuse it.
++	 */
++	orr	x4, x4, #LX_BLKPAG_UXN	/* attr */
+ 	mov	x5, x26				/* pr func */
+ 	bl	pmapboot_enter
+ #endif
+diff --git a/sys/dev/pci/virtio_pci.c b/sys/dev/pci/virtio_pci.c
+index f8fc68ad9a01..3105cf3fe923 100644
+--- a/sys/dev/pci/virtio_pci.c
++++ b/sys/dev/pci/virtio_pci.c
+@@ -272,7 +272,8 @@ virtio_pci_attach(device_t parent, device_t self, void *aux)
+ 	virtio_print_device_type(self, id, revision);
+ 
+ 	csr = pci_conf_read(pc, tag, PCI_COMMAND_STATUS_REG);
+-	csr |= PCI_COMMAND_MASTER_ENABLE | PCI_COMMAND_IO_ENABLE;
++	csr |= PCI_COMMAND_MASTER_ENABLE | PCI_COMMAND_MEM_ENABLE |
++	    PCI_COMMAND_IO_ENABLE;
+ 	pci_conf_write(pc, tag, PCI_COMMAND_STATUS_REG, csr);
+ 
+ 	sc->sc_dev = self;
+@@ -817,6 +818,12 @@ virtio_pci_set_status_10(struct virtio_softc *sc, int status)
+ 		old = bus_space_read_1(iot, ioh, VIRTIO_CONFIG1_DEVICE_STATUS);
+ 	bus_space_write_1(iot, ioh, VIRTIO_CONFIG1_DEVICE_STATUS,
+ 	    status | old);
++	if (status == 0) {
++		/* Virtio 1.0 requires the driver to wait for reset completion. */
++		while (bus_space_read_1(iot, ioh,
++		    VIRTIO_CONFIG1_DEVICE_STATUS) != 0)
++			DELAY(1);
++	}
+ }
+ 
+ void
+diff --git a/sys/dev/fdt/fdt_subr.c b/sys/dev/fdt/fdt_subr.c
+index 45789243ad36..040911b36f42 100644
+--- a/sys/dev/fdt/fdt_subr.c
++++ b/sys/dev/fdt/fdt_subr.c
+@@ -339,6 +339,23 @@ fdtbus_get_reg64(int phandle, u_int index, uint64_t *paddr, uint64_t *psize)
+ }
+ 
+ #if defined(FDT)
++/*
++ * Keep the console link set defined for platforms which intentionally have
++ * no early FDT console.  A real console driver always returns a positive
++ * match and supersedes this no-match sentinel.
++ */
++static int
++fdtbus_no_console_match(int phandle)
++{
++	(void)phandle;
++	return 0;
++}
++
++static const struct fdt_console fdtbus_no_console = {
++	.match = fdtbus_no_console_match,
++};
++FDT_CONSOLE(fdtbus_no_console, &fdtbus_no_console);
++
+ const struct fdt_console *
+ fdtbus_get_console(void)
+ {

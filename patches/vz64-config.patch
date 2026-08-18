@@ -1,0 +1,114 @@
+diff --git a/sys/arch/evbarm/conf/VZ64 b/sys/arch/evbarm/conf/VZ64
+new file mode 100644
+index 000000000000..a0e4a2c063d4
+--- /dev/null
++++ b/sys/arch/evbarm/conf/VZ64
+@@ -0,0 +1,108 @@
++# VZ64 -- NetBSD/aarch64 for Apple Virtualization.framework
++# VZ hardware plus a diagnostic appliance userspace.
++
++include        "arch/evbarm/conf/std.generic64"
++include        "arch/arm/pic/files.pic"
++include        "arch/arm/cortex/files.cortex"
++include        "arch/evbarm/conf/files.fdt"
++
++# Remove facilities inherited from std.generic64 that VZ does not use.
++no options        ACPI_REDUCED_HW
++no options        MODULAR
++no options        MODULAR_DEFAULT_AUTOLOAD
++no options        PCI_SMCCC
++no options        MEMORY_DISK_HOOKS
++no options        MEMORY_DISK_DYNAMIC
++no pseudo-device md
++
++maxusers        32
++
++# AArch64 CPU and VZ platform facilities.
++options         CPU_CORTEX
++options         MULTIPROCESSOR
++options         ARMV81_HAFDBS
++options         ARMV81_PAN
++options         RTC_OFFSET=0
++options         NTP
++options         BUSDMA_COUNTERS
++
++# Keep enough diagnostic state to investigate VZ regressions.
++options         INCLUDE_CONFIG_FILE
++options         KTRACE
++options         USERCONF
++options         SYSCTL_INCLUDE_DESCR
++options         DDB
++options         DDB_ONPANIC=1
++options         DDB_HISTORY_SIZE=100
++makeoptions        DEBUG="-g"
++makeoptions        COPY_SYMTAB=1
++
++# Native AArch64 ELF and script execution come from std.aarch64.
++
++# Balanced appliance filesystem set.
++file-system        FFS
++file-system        FDESC
++file-system        KERNFS
++file-system        NULLFS
++file-system        PROCFS
++file-system        PTYFS
++file-system        TMPFS
++options         FFS_EI
++options         FFS_NO_SNAPSHOT
++options         UFS_ACL
++options         UFS_DIRHASH
++options         UFS_EXTATTR
++options         WAPBL
++options         DKWEDGE_AUTODISCOVER
++options         DKWEDGE_METHOD_GPT
++options         BUFQ_PRIOCSCAN
++
++# DHCP is userspace, backed by IPv4/IPv6, loopback, BPF, and vioif.
++options         INET
++options         INET6
++pseudo-device        bpfilter
++pseudo-device        loop
++
++# Facilities used by the base and etc release sets.
++options         SYSVMSG
++options         SYSVSEM
++options         SYSVSHM
++pseudo-device        pty
++pseudo-device        drvctl
++pseudo-device        clockctl
++pseudo-device        ksyms
++pseudo-device        wsmux
++
++# Retain the standard PaX policy without its debug-only string tables.
++options         PAX_ASLR=1
++options         PAX_MPROTECT=1
++options         PAX_SEGVUARD=0
++
++config                netbsd                root on ? type ?
++
++# Device tree root, CPUs, PSCI, clock, timer, and GICv3.
++armfdt0        at root
++simplebus*        at fdt? pass 0
++cpus*                at fdt? pass 0
++cpu*                at fdt? pass 0
++psci*                at fdt? pass 0
++fclock*        at fdt? pass 1
++gicvthree*        at fdt? pass 1
++gtmr*                at fdt? pass 2
++armgtmr0        at gtmr?
++
++# VZ real-time clock and GPIO power-button path.
++plrtc*                at fdt?
++plgpio*        at fdt?
++gpio*                at gpiobus?
++gpiokeys*        at fdt?
++wskbd*                at gpiokeys? console ? mux 1
++
++# Generic FDT PCI host and the only VZ guest devices supported here.
++pcihost*        at fdt?
++pci*                at pcibus?
++virtio*        at pci? dev ? function ?
++viocon*        at virtio?
++ld*                at virtio?
++vioif*                at virtio?
++viornd*        at virtio?
