@@ -67,6 +67,13 @@ network or enable remote services without setting a root password first.
 See [docs/TECHNICAL.md](docs/TECHNICAL.md) for the kernel changes, disk format,
 VZ hardware contract, and acceptance tests.
 
+## Credits
+
+The late-console patch is substantially derived from `viocon(4)` kernel-console
+support originally written by Taylor R. Campbell and carried in Emile "iMil"
+Heitor's [ongoing full VirtIO console patch series for NetBSD](https://mail-index.netbsd.org/port-amd64/2026/01/22/msg003793.html).
+This repository adapts the late-console portion for NetBSD 11 on VZ.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

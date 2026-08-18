@@ -88,10 +88,17 @@ is not a build target in this repository.
 
 ### 4.1 Late Virtio console
 
-`patches/viocon-console.patch` turns port zero of `viocon(4)` into a NetBSD
-kernel console when no normal console has already attached. It provides
-polling `cngetc`, `cnputc`, and `cnpollc` operations using the driver's
-existing receive and transmit virtqueues.
+`patches/viocon-console.patch` is substantially derived from the
+`viocon(4)` kernel-console support originally written by Taylor R. Campbell.
+That work is carried as patch 2 in Emile "iMil" Heitor's
+[ongoing full VirtIO console patch series for NetBSD](https://mail-index.netbsd.org/port-amd64/2026/01/22/msg003793.html).
+This repository adapts its late-console portion to NetBSD 11 and VZ; the
+console-selection condition and diagnostic banner are VZ-specific. It does
+not include the series' Virtio-MMIO early console or multiport work.
+
+The patch turns port zero into a NetBSD kernel console when no normal console
+has already attached. It provides polling `cngetc`, `cnputc`, and `cnpollc`
+operations using the driver's existing receive and transmit virtqueues.
 
 The console attaches only after FDT, PCI, Virtio PCI, and `viocon` discovery:
 
@@ -327,6 +334,7 @@ NETBSD_VZ_NETWORK_OK
 - [NetBSD 11.0 source sets](https://cdn.netbsd.org/pub/NetBSD/NetBSD-11.0/source/sets/)
 - [NetBSD 11.0 evbarm-aarch64 sets](https://cdn.netbsd.org/pub/NetBSD/NetBSD-11.0/evbarm-aarch64/binary/sets/)
 - [NetBSD viocon(4)](https://man.netbsd.org/viocon.4)
+- [NetBSD full VirtIO console patchset review](https://mail-index.netbsd.org/port-amd64/2026/01/22/msg003793.html)
 - [NetBSD vioif(4)](https://man.netbsd.org/vioif.4)
 - [Virtio 1.0 specification](https://docs.oasis-open.org/virtio/virtio/v1.0/virtio-v1.0.html)
 - [Apple VZLinuxBootLoader](https://developer.apple.com/documentation/virtualization/vzlinuxbootloader)
