@@ -66,3 +66,7 @@ network or enable remote services without setting a root password first.
 
 See [docs/TECHNICAL.md](docs/TECHNICAL.md) for the kernel changes, disk format,
 VZ hardware contract, and acceptance tests.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
