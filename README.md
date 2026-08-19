@@ -4,6 +4,11 @@ Build and boot a reduced NetBSD 11.0 AArch64 kernel and an FFS root disk on
 Apple Silicon macOS. The VM uses Virtualization.framework directly; Apple
 Container is not involved.
 
+![Animated condensed terminal transcript of NetBSD 11 booting on Apple VZ and shutting down cleanly](docs/netbsd-vz-boot.gif)
+
+_Rendered from an actual offline `make smoke` run. Repetitive `dmesg` output
+and machine-local paths are omitted._
+
 ## Requirements
 
 - Apple Silicon Mac with Virtualization.framework
