@@ -1,23 +1,46 @@
-# NetBSD 11 on Apple Virtualization.framework
+# NetBSD 11 EFI boot on Apple Virtualization.framework
 
-Build and boot a reduced NetBSD 11.0 AArch64 kernel and an FFS root disk on
-Apple Silicon macOS. The VM uses Virtualization.framework directly; Apple
-Container is not involved.
+This proof of concept builds and boots NetBSD 11.0/evbarm-aarch64 on an
+Apple Silicon Mac through Virtualization.framework's generic EFI platform.
+It uses the stock NetBSD `bootaa64.efi` loader and stock `GENERIC64` kernel
+configuration.
 
-![Animated condensed terminal transcript of NetBSD 11 booting on Apple VZ and shutting down cleanly](docs/netbsd-vz-boot.gif)
+The only NetBSD source changes are three generic Virtio fixes: PCI memory
+decoding, reset-completion waiting, and network MTU negotiation. There is no
+VZ-specific kernel configuration or fallback to
+[the earlier direct-boot implementation](https://tbarabosch.com/porting-netbsd-to-apple-vz/).
 
-_Rendered from an actual offline `make smoke` run. Repetitive `dmesg` output
-and machine-local paths are omitted._
+![Condensed terminal transcript of NetBSD 11 booting through EFI on Apple VZ and shutting down cleanly](docs/netbsd-vz-boot.gif)
+
+_Condensed from an actual offline `make run` EFI boot. Machine-local paths
+and repetitive output are omitted._
 
 ## Requirements
 
 - Apple Silicon Mac with Virtualization.framework
 - Xcode or Xcode Command Line Tools selected with `xcode-select`
 - `make` and network access to the official NetBSD archives
-- about 10 GiB of free space for source, tools, objects, and images
+- About 10 GiB of free space for source, tools, objects, and images
 
-The first kernel build downloads verified NetBSD 11.0 source sets and builds
-the NetBSD AArch64 cross tools locally.
+The first build downloads SHA-512-pinned NetBSD 11.0 source sets and builds
+the NetBSD AArch64 cross-tools locally.
+
+## Why EFI instead of our earlier direct-boot work?
+
+EFI follows NetBSD's normal arm64 boot contract: firmware loads the stock
+`bootaa64.efi` from a GPT disk, and the loader starts stock `GENERIC64` using
+ACPI hardware discovery. [Our earlier direct-boot
+work](https://tbarabosch.com/porting-netbsd-to-apple-vz/) instead required a
+raw AArch64 Image, an FDT supplied by the host, and changes around bootstrap
+and console selection.
+
+For this project, EFI is superior because the goal is the smallest possible
+upstream NetBSD change. It removes the VZ-specific loader, FDT, raw-image,
+and forced-console delta, leaving only generic Virtio driver fixes. EFI does
+require an EFI System Partition, variable-store state, and a Virtio GPU for
+GOP, and it can take longer to boot; the earlier approach can still be useful
+when a small, firmware-free boot path matters more than matching normal
+hardware.
 
 ## Build and run
 
@@ -25,59 +48,50 @@ the NetBSD AArch64 cross tools locally.
 make build
 make disk
 
-make run                 # interactive, networkless disk boot
-make run-network         # interactive disk boot with VZ NAT
-make run-kernel          # diskless root-device prompt
-make smoke               # networkless userspace proof
-make smoke-network       # DHCP and Internet IPv4 proof
+make run
+make run-network
 make clean
 ```
 
-`make run` and both smoke targets use a disposable writable clone of the
-default disk. `make clean` removes objects and outputs but retains downloads,
-the patched source tree, and cross tools.
+`make run` boots without a network device. `make run-network` adds a Virtio
+network device attached to VZ NAT.
 
-## Outputs
+The default disk is copy-on-write cloned for each run, and EFI state is
+temporary. Passing another disk attaches it directly; passing an EFI-state
+directory reuses the machine identifier and EFI variable store.
+
+## Output and overrides
 
 ```text
-.build/out/netbsd-VZ64-vz.img
-.build/out/netbsd-vz-root.raw
+.build/out/netbsd-GENERIC64
+.build/out/netbsd-vz.raw
 ```
 
-The kernel image is exactly 8 MiB. The disk is a 1 GiB RAW image containing
-one GPT partition with a little-endian FFSv1 root filesystem.
-
-## Overrides
+`netbsd-vz.raw` is a 1,088 MiB GPT disk. It contains a 64 MiB FAT32 EFI
+System Partition followed by an FFSv1 root partition named `netbsd-root`.
 
 ```sh
 NETBSD_VZ_JOBS=8 make build
-NETBSD_VZ_TIMEOUT=120 make run
-IMAGE=/absolute/path/netbsd.img make run-kernel
-IMAGE=/absolute/path/netbsd.img DISK=/absolute/path/root.raw make run
+NETBSD_VZ_TIMEOUT=180 make run
+DISK=/absolute/path/netbsd.raw make run
+./scripts/run.sh --disk /absolute/path/netbsd.raw \
+    --efi-state /absolute/path/efi-state
 ```
 
-`IMAGE` selects another AArch64 Image. A caller-supplied `DISK` is attached
-directly and is therefore persistent. The Swift runner also supports
-`--initrd` and an exact `--command-line` override for external kernels.
+The runner always uses EFI. There is deliberately no boot-mode selector.
 
-Disk runs default to 90 seconds. Diskless runs default to 10 seconds.
+## Console and security
 
-## Security
+EFI and early kernel output use the Virtio GPU's GOP display. Interactive
+headless login becomes available through the stock getty on `/dev/ttyVI00`;
+run `dmesg` after login to inspect the early kernel log.
 
-The release set's empty root password is retained for the isolated console
-proof. No inbound service is enabled. Networking is attached only by
-`run-network` and `smoke-network`; do not use this image on an untrusted
-network or enable remote services without setting a root password first.
+The POC image retains the release set's empty root password. No inbound
+service is enabled. Do not enable remote services or expose the image to an
+untrusted network without setting a root password.
 
-See [docs/TECHNICAL.md](docs/TECHNICAL.md) for the kernel changes, disk format,
-VZ hardware contract, and acceptance tests.
-
-## Credits
-
-The late-console patch is substantially derived from `viocon(4)` kernel-console
-support originally written by Taylor R. Campbell and carried in Emile "iMil"
-Heitor's [ongoing full VirtIO console patch series for NetBSD](https://mail-index.netbsd.org/port-amd64/2026/01/22/msg003793.html).
-This repository adapts the late-console portion for NetBSD 11 on VZ.
+See [docs/TECHNICAL.md](docs/TECHNICAL.md) for the boot contract, disk format,
+and remaining NetBSD patch set.
 
 ## License
 

@@ -1,0 +1,16 @@
+diff --git a/sys/dev/pci/virtio_pci.c b/sys/dev/pci/virtio_pci.c
+--- a/sys/dev/pci/virtio_pci.c
++++ b/sys/dev/pci/virtio_pci.c
+@@ -817,6 +817,12 @@ virtio_pci_set_status_10(struct virtio_softc *sc, int status)
+ 		old = bus_space_read_1(iot, ioh, VIRTIO_CONFIG1_DEVICE_STATUS);
+ 	bus_space_write_1(iot, ioh, VIRTIO_CONFIG1_DEVICE_STATUS,
+ 	    status | old);
++	if (status == 0) {
++		/* Virtio 1.0 requires the driver to wait for reset completion. */
++		while (bus_space_read_1(iot, ioh,
++		    VIRTIO_CONFIG1_DEVICE_STATUS) != 0)
++			DELAY(1);
++	}
+ }
+ 
+ void
