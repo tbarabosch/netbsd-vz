@@ -1,83 +1,71 @@
-# NetBSD 11 on Apple Virtualization.framework
+# NetBSD 11 EFI boot on Apple Virtualization.framework
 
-Build and boot a reduced NetBSD 11.0 AArch64 kernel and an FFS root disk on
-Apple Silicon macOS. The VM uses Virtualization.framework directly; Apple
-Container is not involved.
+Build and boot NetBSD 11.0/evbarm-aarch64 on Apple Silicon macOS through
+Virtualization.framework's generic EFI platform. The guest uses the stock
+NetBSD bootaa64.efi loader and stock GENERIC64 kernel configuration.
 
-![Animated condensed terminal transcript of NetBSD 11 booting on Apple VZ and shutting down cleanly](docs/netbsd-vz-boot.gif)
-
-_Rendered from an actual offline `make smoke` run. Repetitive `dmesg` output
-and machine-local paths are omitted._
+Only three generic NetBSD Virtio fixes are applied: PCI memory decoding,
+reset-completion waiting, and network MTU negotiation. There is no
+VZ-specific kernel configuration, loader change, FDT bootstrap change, forced
+kernel console, raw AArch64 Image, or direct-boot fallback.
 
 ## Requirements
 
 - Apple Silicon Mac with Virtualization.framework
-- Xcode or Xcode Command Line Tools selected with `xcode-select`
-- `make` and network access to the official NetBSD archives
+- Xcode or Xcode Command Line Tools selected with xcode-select
+- make and network access to the official NetBSD archives
 - about 10 GiB of free space for source, tools, objects, and images
 
-The first kernel build downloads verified NetBSD 11.0 source sets and builds
-the NetBSD AArch64 cross tools locally.
+The first build downloads SHA-512-pinned NetBSD 11.0 source sets and builds
+the NetBSD AArch64 cross-tools locally.
 
 ## Build and run
 
-```sh
-make build
-make disk
+    make build
+    make disk
 
-make run                 # interactive, networkless disk boot
-make run-network         # interactive disk boot with VZ NAT
-make run-kernel          # diskless root-device prompt
-make smoke               # networkless userspace proof
-make smoke-network       # DHCP and Internet IPv4 proof
-make clean
-```
+    make run                 # interactive, networkless EFI boot
+    make run-network         # interactive EFI boot with VZ NAT
+    make smoke               # offline EFI/ACPI and userspace proof
+    make smoke-network       # DHCP, gateway, and public IPv4 proof
+    make smoke-persistence   # reuse one disk and EFI variable store
+    make smoke-repeat        # five consecutive fresh-state cold boots
+    make clean
 
-`make run` and both smoke targets use a disposable writable clone of the
-default disk. `make clean` removes objects and outputs but retains downloads,
-the patched source tree, and cross tools.
+The normal run and smoke targets boot a disposable writable clone of the
+default disk and use disposable EFI variable state. A caller-supplied DISK is
+attached directly, so changes to it persist.
 
-## Outputs
+## Output and overrides
 
-```text
-.build/out/netbsd-VZ64-vz.img
-.build/out/netbsd-vz-root.raw
-```
+    .build/out/netbsd-GENERIC64
+    .build/out/netbsd-vz.raw
 
-The kernel image is exactly 8 MiB. The disk is a 1 GiB RAW image containing
-one GPT partition with a little-endian FFSv1 root filesystem.
+netbsd-vz.raw is a 1,088 MiB GPT disk. It contains a 64 MiB FAT32 EFI System
+Partition followed by an FFSv1 root partition named netbsd-root.
 
-## Overrides
+    NETBSD_VZ_JOBS=8 make build
+    NETBSD_VZ_TIMEOUT=180 make run
+    DISK=/absolute/path/netbsd.raw make run
+    ./scripts/run.sh --disk /absolute/path/netbsd.raw \
+        --efi-state /absolute/path/persistent-efi-state
 
-```sh
-NETBSD_VZ_JOBS=8 make build
-NETBSD_VZ_TIMEOUT=120 make run
-IMAGE=/absolute/path/netbsd.img make run-kernel
-IMAGE=/absolute/path/netbsd.img DISK=/absolute/path/root.raw make run
-```
+The runner always uses EFI. There is deliberately no boot-mode selector.
+Networking is opt-in.
 
-`IMAGE` selects another AArch64 Image. A caller-supplied `DISK` is attached
-directly and is therefore persistent. The Swift runner also supports
-`--initrd` and an exact `--command-line` override for external kernels.
+## Console and security
 
-Disk runs default to 90 seconds. Diskless runs default to 10 seconds.
+EFI and the kernel use the Virtio GPU's GOP display. Headless automation logs
+in through a stock getty on /dev/ttyVI00; early boot messages are replayed
+with dmesg after login.
 
-## Security
+The proof image retains the release set's empty root password for isolated
+console automation. No inbound service is enabled. Do not enable remote
+services or expose the image to an untrusted network without setting a root
+password.
 
-The release set's empty root password is retained for the isolated console
-proof. No inbound service is enabled. Networking is attached only by
-`run-network` and `smoke-network`; do not use this image on an untrusted
-network or enable remote services without setting a root password first.
-
-See [docs/TECHNICAL.md](docs/TECHNICAL.md) for the kernel changes, disk format,
-VZ hardware contract, and acceptance tests.
-
-## Credits
-
-The late-console patch is substantially derived from `viocon(4)` kernel-console
-support originally written by Taylor R. Campbell and carried in Emile "iMil"
-Heitor's [ongoing full VirtIO console patch series for NetBSD](https://mail-index.netbsd.org/port-amd64/2026/01/22/msg003793.html).
-This repository adapts the late-console portion for NetBSD 11 on VZ.
+See [docs/TECHNICAL.md](docs/TECHNICAL.md) for the boot contract, patch
+evidence, disk format, NetBSD-current test, and acceptance results.
 
 ## License
 

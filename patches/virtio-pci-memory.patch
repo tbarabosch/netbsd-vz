@@ -1,0 +1,13 @@
+diff --git a/sys/dev/pci/virtio_pci.c b/sys/dev/pci/virtio_pci.c
+--- a/sys/dev/pci/virtio_pci.c
++++ b/sys/dev/pci/virtio_pci.c
+@@ -272,7 +272,8 @@ virtio_pci_attach(device_t parent, device_t self, void *aux)
+ 	virtio_print_device_type(self, id, revision);
+ 
+ 	csr = pci_conf_read(pc, tag, PCI_COMMAND_STATUS_REG);
+-	csr |= PCI_COMMAND_MASTER_ENABLE | PCI_COMMAND_IO_ENABLE;
++	csr |= PCI_COMMAND_MASTER_ENABLE | PCI_COMMAND_MEM_ENABLE |
++	    PCI_COMMAND_IO_ENABLE;
+ 	pci_conf_write(pc, tag, PCI_COMMAND_STATUS_REG, csr);
+ 
+ 	sc->sc_dev = self;

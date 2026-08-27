@@ -1,23 +1,23 @@
 SHELL := /bin/sh
 
-IMAGE ?= $(CURDIR)/.build/out/netbsd-VZ64-vz.img
-DISK ?= $(CURDIR)/.build/out/netbsd-vz-root.raw
+DISK ?= $(CURDIR)/.build/out/netbsd-vz.raw
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build disk run run-network run-kernel smoke smoke-network clean
+.PHONY: help build disk run run-network smoke smoke-network \
+	smoke-persistence smoke-repeat clean
 
 help:
 	@printf '%s\n' \
-	  'make build               Build the reduced NetBSD 11 VZ64 kernel' \
-	  'make disk                Build the minimal 1 GiB GPT/FFS root disk' \
-	  'make run                 Boot the kernel and a disposable root-disk clone' \
-	  'make run-network         Boot the root disk with opt-in Virtio NAT' \
-	  'make run-kernel          Boot the diskless kernel root-prompt regression' \
-	  'make smoke               Prove login, shell execution, and guest poweroff' \
-	  'make smoke-network       Prove DHCP, gateway/public ping, and guest poweroff' \
-	  'make run IMAGE=... DISK=...  Boot alternate kernel/disk inputs' \
-	  'make clean               Remove objects and outputs, preserving expensive caches'
+	  'make build              Build stock NetBSD 11.0 GENERIC64 with three Virtio fixes' \
+	  'make disk               Build the EFI/GPT/FAT32/FFS disk' \
+	  'make run                Boot a disposable clone through EFI/ACPI' \
+	  'make run-network        Boot with opt-in Virtio NAT' \
+	  'make smoke              Prove EFI/ACPI, login, storage, and poweroff' \
+	  'make smoke-network      Add DHCP, gateway, and public network proof' \
+	  'make smoke-persistence  Prove disk and EFI-variable-state persistence' \
+	  'make smoke-repeat       Prove five consecutive cold EFI boots' \
+	  'make clean              Remove objects and outputs, preserving expensive caches'
 
 build:
 	./scripts/build.sh
@@ -26,19 +26,22 @@ disk:
 	./scripts/build-disk.sh
 
 run:
-	./scripts/run.sh --disk "$(DISK)" "$(IMAGE)"
+	./scripts/run.sh --disk "$(DISK)"
 
 run-network:
-	./scripts/run.sh --disk "$(DISK)" --network "$(IMAGE)"
-
-run-kernel:
-	./scripts/run.sh "$(IMAGE)"
+	./scripts/run.sh --disk "$(DISK)" --network
 
 smoke:
-	./scripts/run.sh --disk "$(DISK)" --smoke "$(IMAGE)"
+	./scripts/run.sh --disk "$(DISK)" --smoke
 
 smoke-network:
-	./scripts/run.sh --disk "$(DISK)" --network --smoke "$(IMAGE)"
+	./scripts/run.sh --disk "$(DISK)" --network --smoke
+
+smoke-persistence:
+	./scripts/test-persistence.sh
+
+smoke-repeat:
+	./scripts/test-repeat.sh
 
 clean:
 	./scripts/clean.sh

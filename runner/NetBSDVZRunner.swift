@@ -4,15 +4,15 @@ import Foundation
 
 private enum RunnerError: Error, CustomStringConvertible {
     case usage(String)
-    case invalidImage(String)
     case invalidDisk(String)
+    case invalidEFIState(String)
     case smokeFailed(String)
     case stoppedBeforeTimeout(String)
     case systemCall(String, Int32)
 
     var description: String {
         switch self {
-        case .usage(let message), .invalidImage(let message), .invalidDisk(let message):
+        case .usage(let message), .invalidDisk(let message), .invalidEFIState(let message):
             return message
         case .smokeFailed(let reason):
             return "smoke test failed: \(reason)"
@@ -24,27 +24,32 @@ private enum RunnerError: Error, CustomStringConvertible {
     }
 }
 
+private enum PersistenceProbe: Equatable {
+    case none
+    case write
+    case read
+}
+
 private struct Options {
-    let kernel: URL
     let timeoutSeconds: Int
-    let commandLine: String
-    let initialRamdisk: URL?
-    let disk: URL?
+    let disk: URL
+    let efiState: URL
+    let persistenceProbe: PersistenceProbe
     let smoke: Bool
     let network: Bool
 
     private static let usage =
-        "usage: netbsd-vz-runner [--timeout SECONDS] [--command-line STRING] "
-        + "[--initrd PATH] [--disk RAW] [--network] [--smoke] KERNEL.IMG"
+        "usage: netbsd-vz-runner --disk RAW --efi-state DIR "
+        + "[--timeout SECONDS] [--network] [--smoke] "
+        + "[--persistence-write|--persistence-read]"
 
     static func parse(_ arguments: [String]) throws -> Options {
         var timeout: Int?
-        var commandLine: String?
-        var initialRamdiskPath: String?
         var diskPath: String?
+        var efiStatePath: String?
+        var persistenceProbe = PersistenceProbe.none
         var smoke = false
         var network = false
-        var kernelPath: String?
         var index = 1
 
         while index < arguments.count {
@@ -57,24 +62,28 @@ private struct Options {
                     throw RunnerError.usage("--timeout requires a positive number of seconds")
                 }
                 timeout = parsed
-            case "--command-line":
-                index += 1
-                guard index < arguments.count else {
-                    throw RunnerError.usage("--command-line requires a value")
-                }
-                commandLine = arguments[index]
-            case "--initrd":
-                index += 1
-                guard index < arguments.count else {
-                    throw RunnerError.usage("--initrd requires a path")
-                }
-                initialRamdiskPath = arguments[index]
             case "--disk":
                 index += 1
                 guard index < arguments.count else {
                     throw RunnerError.usage("--disk requires a path")
                 }
                 diskPath = arguments[index]
+            case "--efi-state":
+                index += 1
+                guard index < arguments.count else {
+                    throw RunnerError.usage("--efi-state requires a directory")
+                }
+                efiStatePath = arguments[index]
+            case "--persistence-write":
+                guard persistenceProbe == .none else {
+                    throw RunnerError.usage("only one persistence probe may be selected")
+                }
+                persistenceProbe = .write
+            case "--persistence-read":
+                guard persistenceProbe == .none else {
+                    throw RunnerError.usage("only one persistence probe may be selected")
+                }
+                persistenceProbe = .read
             case "--smoke":
                 smoke = true
             case "--network":
@@ -82,72 +91,30 @@ private struct Options {
             case "-h", "--help":
                 throw RunnerError.usage(usage)
             default:
-                guard !arguments[index].hasPrefix("-") else {
-                    throw RunnerError.usage("unknown option: \(arguments[index])")
-                }
-                guard kernelPath == nil else {
-                    throw RunnerError.usage("only one kernel image may be specified")
-                }
-                kernelPath = arguments[index]
+                throw RunnerError.usage("unknown option: \(arguments[index])")
             }
             index += 1
         }
 
-        guard let kernelPath else {
-            throw RunnerError.usage(usage)
+        guard let diskPath else {
+            throw RunnerError.usage("--disk requires a RAW EFI disk")
         }
-        if smoke, diskPath == nil {
-            throw RunnerError.usage("--smoke requires --disk RAW")
+        guard let efiStatePath else {
+            throw RunnerError.usage("--efi-state requires a directory")
         }
-        let disk = diskPath.map { URL(fileURLWithPath: $0).standardizedFileURL }
+        if persistenceProbe != .none, !smoke {
+            throw RunnerError.usage("persistence probes require --smoke")
+        }
         return Options(
-            kernel: URL(fileURLWithPath: kernelPath).standardizedFileURL,
-            timeoutSeconds: timeout ?? (disk == nil ? 10 : 90),
-            commandLine: commandLine ?? (disk == nil ? "-v" : "-v root=NAME=netbsd-root"),
-            initialRamdisk: initialRamdiskPath.map {
-                URL(fileURLWithPath: $0).standardizedFileURL
-            },
-            disk: disk,
+            timeoutSeconds: timeout ?? 120,
+            disk: URL(fileURLWithPath: diskPath).standardizedFileURL,
+            efiState: URL(
+                fileURLWithPath: efiStatePath,
+                isDirectory: true
+            ).standardizedFileURL,
+            persistenceProbe: persistenceProbe,
             smoke: smoke,
             network: network
-        )
-    }
-}
-
-private func littleEndianUInt32(_ data: Data, at offset: Int) -> UInt32 {
-    data[offset..<offset + 4].enumerated().reduce(0) { value, element in
-        value | UInt32(element.element) << UInt32(element.offset * 8)
-    }
-}
-
-private func littleEndianUInt64(_ data: Data, at offset: Int) -> UInt64 {
-    data[offset..<offset + 8].enumerated().reduce(0) { value, element in
-        value | UInt64(element.element) << UInt64(element.offset * 8)
-    }
-}
-
-private func validateImage(_ url: URL) throws {
-    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-    guard let fileSize = attributes[.size] as? NSNumber else {
-        throw RunnerError.invalidImage("cannot determine kernel image size")
-    }
-    let handle = try FileHandle(forReadingFrom: url)
-    defer { try? handle.close() }
-    let header = try handle.read(upToCount: 64) ?? Data()
-    guard header.count == 64 else {
-        throw RunnerError.invalidImage("kernel image is shorter than 64 bytes")
-    }
-
-    let magic = littleEndianUInt32(header, at: 56)
-    guard magic == 0x644d_5241 else {
-        throw RunnerError.invalidImage(
-            String(format: "bad AArch64 Image magic 0x%08x", magic)
-        )
-    }
-    let imageSize = littleEndianUInt64(header, at: 16)
-    guard imageSize > 0, imageSize <= fileSize.uint64Value else {
-        throw RunnerError.invalidImage(
-            "declared image size \(imageSize) is invalid for \(fileSize.uint64Value)-byte file"
         )
     }
 }
@@ -171,6 +138,50 @@ private func validateDisk(_ url: URL) throws {
     guard fileSize.uint64Value.isMultiple(of: 512) else {
         throw RunnerError.invalidDisk("disk image size is not 512-byte aligned: \(url.path)")
     }
+}
+
+private struct EFIState {
+    let machineIdentifier: VZGenericMachineIdentifier
+    let variableStore: VZEFIVariableStore
+}
+
+private func loadOrCreateEFIState(_ directory: URL) throws -> EFIState {
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+        isDirectory.boolValue
+    else {
+        throw RunnerError.invalidEFIState(
+            "EFI state path is not an existing directory: \(directory.path)"
+        )
+    }
+
+    let identifierURL = directory.appendingPathComponent("machine-identifier.bin")
+    let variableStoreURL = directory.appendingPathComponent("variable-store.bin")
+    let machineIdentifier: VZGenericMachineIdentifier
+    if FileManager.default.fileExists(atPath: identifierURL.path) {
+        let data = try Data(contentsOf: identifierURL)
+        guard let savedIdentifier = VZGenericMachineIdentifier(dataRepresentation: data) else {
+            throw RunnerError.invalidEFIState(
+                "saved machine identifier is invalid: \(identifierURL.path)"
+            )
+        }
+        machineIdentifier = savedIdentifier
+    } else {
+        let newIdentifier = VZGenericMachineIdentifier()
+        try newIdentifier.dataRepresentation.write(to: identifierURL, options: .atomic)
+        machineIdentifier = newIdentifier
+    }
+
+    let variableStore: VZEFIVariableStore
+    if FileManager.default.fileExists(atPath: variableStoreURL.path) {
+        variableStore = VZEFIVariableStore(url: variableStoreURL)
+    } else {
+        variableStore = try VZEFIVariableStore(
+            creatingVariableStoreAt: variableStoreURL,
+            options: []
+        )
+    }
+    return EFIState(machineIdentifier: machineIdentifier, variableStore: variableStore)
 }
 
 private func start(_ vm: VZVirtualMachine, on queue: DispatchQueue) async throws {
@@ -205,18 +216,60 @@ private enum RunResult: Equatable {
 private struct SmokeEvidence {
     var virtioNetwork = false
     var cleanUnmount = false
+    var shutdownHooksDone = false
+    var acpiFDT = false
+    var acpi = false
+    var gicV3 = false
+    var genericTimer = false
+    var acpiPCI = false
+    var virtioConsole = false
+    var virtioStorage = false
+    var virtioEntropy = false
+    var namedRoot = false
 
     mutating func observe(_ text: String) {
         virtioNetwork = virtioNetwork
             || (text.contains("] vioif") && text.contains(" at virtio"))
         cleanUnmount = cleanUnmount
-            || text.contains("unmounted /dev/dk0 on / type ffs")
+            || (text.contains("unmounted /dev/dk") && text.contains(" on / type ffs"))
+        shutdownHooksDone = shutdownHooksDone || text.contains("Done running shutdown hooks.")
+        acpiFDT = acpiFDT || text.contains("acpifdt0 at ")
+        acpi = acpi || (text.contains("acpi0 at acpifdt") || text.contains("ACPI:"))
+        gicV3 = gicV3
+            || (text.contains("gicvthree") && text.contains(" at acpi"))
+        genericTimer = genericTimer
+            || (text.contains("gtmr") && text.contains(" at acpi"))
+        acpiPCI = acpiPCI
+            || (text.contains("acpipchb") && text.contains(" at acpi"))
+        virtioConsole = virtioConsole
+            || (text.contains("viocon") && text.contains(" at virtio"))
+        virtioStorage = virtioStorage
+            || (text.contains("] ld") && text.contains(" at virtio"))
+        virtioEntropy = virtioEntropy
+            || (text.contains("viornd") && text.contains(" at virtio"))
+        namedRoot = namedRoot
+            || (text.contains("\"netbsd-root\"") && text.contains("type: ffs"))
     }
 
     func networkError(expected: Bool) -> String? {
         if expected, !virtioNetwork { return "vioif did not attach" }
         if !expected, virtioNetwork { return "vioif attached during offline smoke" }
         return nil
+    }
+
+    func efiPlatformError() -> String? {
+        let requirements: [(Bool, String)] = [
+            (acpiFDT, "acpifdt did not attach"),
+            (acpi, "ACPI did not attach"),
+            (gicV3, "GICv3 did not attach through ACPI"),
+            (genericTimer, "generic timer did not attach through ACPI"),
+            (acpiPCI, "ACPI PCI host bridge did not attach"),
+            (virtioConsole, "viocon did not attach"),
+            (virtioStorage, "Virtio block storage did not attach"),
+            (virtioEntropy, "Virtio entropy did not attach"),
+            (namedRoot, "netbsd-root GPT wedge was not discovered"),
+        ]
+        return requirements.first(where: { !$0.0 })?.1
     }
 }
 
@@ -275,6 +328,7 @@ private func runUntilTimeout(
     transcriptHandle: FileHandle?,
     smoke: Bool,
     network: Bool,
+    persistenceProbe: PersistenceProbe,
     vm: VZVirtualMachine,
     queue: DispatchQueue,
     timeoutSeconds: Int
@@ -337,12 +391,41 @@ private func runUntilTimeout(
                         guard let inputHandle else {
                             throw RunnerError.smokeFailed("serial input pipe is unavailable")
                         }
-                        let command = "/sbin/dmesg\nprintf 'NETBSD_VZ_USERSPACE_%s\\n' OK\n"
+                        var command = "/sbin/dmesg\n"
+                        switch persistenceProbe {
+                        case .none:
+                            break
+                        case .write:
+                            command += "printf 'NETBSD_VZ_PERSISTENCE_%s\\n' OK "
+                                + "> /var/db/netbsd-vz-persistence\n"
+                                + "/bin/sync\n"
+                                + "printf 'NETBSD_VZ_PERSISTENCE_WRITE_%s\\n' OK\n"
+                        case .read:
+                            command += "if /usr/bin/grep -q NETBSD_VZ_PERSISTENCE_OK "
+                                + "/var/db/netbsd-vz-persistence; then "
+                                + "printf 'NETBSD_VZ_PERSISTENCE_READ_%s\\n' OK; "
+                                + "else printf 'NETBSD_VZ_PERSISTENCE_READ_%s\\n' FAIL; fi\n"
+                        }
+                        command += "printf 'NETBSD_VZ_USERSPACE_%s\\n' OK\n"
                         try inputHandle.write(contentsOf: Data(command.utf8))
                         smokeStage = .waitingForUserspaceMarker
                         scanBuffer = ""
                     case .waitingForUserspaceMarker
                         where scanBuffer.contains("NETBSD_VZ_USERSPACE_OK"):
+                        if scanBuffer.contains("NETBSD_VZ_PERSISTENCE_READ_FAIL") {
+                            throw RunnerError.smokeFailed("persistence marker was not recovered")
+                        }
+                        if persistenceProbe == .write,
+                            !scanBuffer.contains("NETBSD_VZ_PERSISTENCE_WRITE_OK") {
+                            throw RunnerError.smokeFailed("persistence marker was not written")
+                        }
+                        if persistenceProbe == .read,
+                            !scanBuffer.contains("NETBSD_VZ_PERSISTENCE_READ_OK") {
+                            throw RunnerError.smokeFailed("persistence marker was not read")
+                        }
+                        if let error = evidence.efiPlatformError() {
+                            throw RunnerError.smokeFailed(error)
+                        }
                         if let error = evidence.networkError(expected: network) {
                             throw RunnerError.smokeFailed(error)
                         }
@@ -389,8 +472,10 @@ private func runUntilTimeout(
 
         let state = queue.sync { vm.state }
         if smoke, smokeStage == .waitingForShutdown, state == .stopped {
-            guard evidence.cleanUnmount else {
-                throw RunnerError.smokeFailed("guest stopped without a clean FFS unmount")
+            guard evidence.cleanUnmount || evidence.shutdownHooksDone else {
+                throw RunnerError.smokeFailed(
+                    "guest stopped before shutdown completion was observed"
+                )
             }
             return .smokeSucceeded
         }
@@ -409,8 +494,10 @@ private func runUntilTimeout(
 
     let state = queue.sync { vm.state }
     if smoke, smokeStage == .waitingForShutdown, state == .stopped {
-        guard evidence.cleanUnmount else {
-            throw RunnerError.smokeFailed("guest stopped without a clean FFS unmount")
+        guard evidence.cleanUnmount || evidence.shutdownHooksDone else {
+            throw RunnerError.smokeFailed(
+                "guest stopped before shutdown completion was observed"
+            )
         }
         return .smokeSucceeded
     }
@@ -458,10 +545,8 @@ private struct NetBSDVZRunner {
     static func main() async {
         do {
             let options = try Options.parse(CommandLine.arguments)
-            try validateImage(options.kernel)
-            if let disk = options.disk {
-                try validateDisk(disk)
-            }
+            try validateDisk(options.disk)
+            let efiState = try loadOrCreateEFIState(options.efiState)
 
             let outputPipe = Pipe()
             let inputPipe = options.smoke ? Pipe() : nil
@@ -471,12 +556,13 @@ private struct NetBSDVZRunner {
                 fileHandleForWriting: outputPipe.fileHandleForWriting
             )
 
-            let loader = VZLinuxBootLoader(kernelURL: options.kernel)
-            loader.commandLine = options.commandLine
-            loader.initialRamdiskURL = options.initialRamdisk
+            let platform = VZGenericPlatformConfiguration()
+            platform.machineIdentifier = efiState.machineIdentifier
+            let loader = VZEFIBootLoader()
+            loader.variableStore = efiState.variableStore
 
             let configuration = VZVirtualMachineConfiguration()
-            configuration.platform = VZGenericPlatformConfiguration()
+            configuration.platform = platform
             configuration.bootLoader = loader
             configuration.cpuCount = VZVirtualMachineConfiguration.minimumAllowedCPUCount
             configuration.memorySize = max(
@@ -485,17 +571,23 @@ private struct NetBSDVZRunner {
             )
             configuration.serialPorts = [serial]
             configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
-            if let disk = options.disk {
-                let attachment = try VZDiskImageStorageDeviceAttachment(
-                    url: disk,
-                    readOnly: false,
-                    cachingMode: .automatic,
-                    synchronizationMode: .full
+            let graphics = VZVirtioGraphicsDeviceConfiguration()
+            graphics.scanouts = [
+                VZVirtioGraphicsScanoutConfiguration(
+                    widthInPixels: 1280,
+                    heightInPixels: 720
                 )
-                let blockDevice = VZVirtioBlockDeviceConfiguration(attachment: attachment)
-                blockDevice.blockDeviceIdentifier = "netbsd-vz-root"
-                configuration.storageDevices = [blockDevice]
-            }
+            ]
+            configuration.graphicsDevices = [graphics]
+            let attachment = try VZDiskImageStorageDeviceAttachment(
+                url: options.disk,
+                readOnly: false,
+                cachingMode: .automatic,
+                synchronizationMode: .full
+            )
+            let blockDevice = VZVirtioBlockDeviceConfiguration(attachment: attachment)
+            blockDevice.blockDeviceIdentifier = "netbsd-vz-root"
+            configuration.storageDevices = [blockDevice]
             var networkMAC: VZMACAddress?
             if options.network {
                 let networkDevice = VZVirtioNetworkDeviceConfiguration()
@@ -511,11 +603,14 @@ private struct NetBSDVZRunner {
             let vm = VZVirtualMachine(configuration: configuration, queue: queue)
 
             FileHandle.standardError.write(
-                Data("Booting NetBSD kernel \(options.kernel.path)...\n".utf8)
+                Data("Booting NetBSD through generic EFI/ACPI...\n".utf8)
             )
-            if let disk = options.disk {
-                FileHandle.standardError.write(Data("Attaching disk \(disk.path)...\n".utf8))
-            }
+            FileHandle.standardError.write(
+                Data("Using EFI state \(options.efiState.path)...\n".utf8)
+            )
+            FileHandle.standardError.write(
+                Data("Attaching disk \(options.disk.path)...\n".utf8)
+            )
             if let networkMAC {
                 FileHandle.standardError.write(
                     Data(
@@ -535,6 +630,7 @@ private struct NetBSDVZRunner {
                     transcriptHandle: transcriptHandle,
                     smoke: options.smoke,
                     network: options.network,
+                    persistenceProbe: options.persistenceProbe,
                     vm: vm,
                     queue: queue,
                     timeoutSeconds: options.timeoutSeconds

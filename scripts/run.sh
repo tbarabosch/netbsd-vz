@@ -8,24 +8,29 @@ RUNNER_ROOT="$WORK_ROOT/bin"
 RUNNER="$RUNNER_ROOT/netbsd-vz-runner"
 RUNNER_SOURCE="$REPO_ROOT/runner/NetBSDVZRunner.swift"
 ENTITLEMENTS="$REPO_ROOT/runner/netbsd-vz.entitlements"
-DEFAULT_IMAGE="$WORK_ROOT/out/netbsd-VZ64-vz.img"
-DEFAULT_DISK="$WORK_ROOT/out/netbsd-vz-root.raw"
+DEFAULT_DISK="$WORK_ROOT/out/netbsd-vz.raw"
 RUN_ROOT="$WORK_ROOT/run"
 
 usage()
 {
-    echo "usage: $0 [--disk NETBSD.RAW] [--network] [--smoke] [NETBSD.IMG]" >&2
+    echo "usage: $0 [--disk NETBSD.RAW] [--efi-state DIR] [--network] [--smoke] [--persistence-write|--persistence-read]" >&2
 }
 
-DISK=
+DISK=$DEFAULT_DISK
+EFI_STATE=
 SMOKE=0
 NETWORK=0
-IMAGE=
+PERSISTENCE=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --disk)
             [ "$#" -ge 2 ] || { echo "error: --disk requires a path" >&2; exit 1; }
             DISK=$2
+            shift 2
+            ;;
+        --efi-state)
+            [ "$#" -ge 2 ] || { echo "error: --efi-state requires a directory" >&2; exit 1; }
+            EFI_STATE=$2
             shift 2
             ;;
         --smoke)
@@ -36,37 +41,27 @@ while [ "$#" -gt 0 ]; do
             NETWORK=1
             shift
             ;;
+        --persistence-write|--persistence-read)
+            [ -z "$PERSISTENCE" ] || {
+                echo "error: only one persistence probe may be selected" >&2
+                exit 1
+            }
+            PERSISTENCE=$1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
             ;;
-        --*)
-            echo "error: unknown option: $1" >&2
+        *)
+            echo "error: unknown argument: $1" >&2
             usage
             exit 1
-            ;;
-        *)
-            [ -z "$IMAGE" ] || { echo "error: only one kernel image may be specified" >&2; exit 1; }
-            IMAGE=$1
-            shift
             ;;
     esac
 done
 
-IMAGE=${IMAGE:-$DEFAULT_IMAGE}
-[ "$SMOKE" -eq 0 ] || [ -n "$DISK" ] || {
-    echo "error: --smoke requires --disk NETBSD.RAW" >&2
-    exit 1
-}
-
-if [ -n "${NETBSD_VZ_TIMEOUT+x}" ]; then
-    TIMEOUT=$NETBSD_VZ_TIMEOUT
-elif [ -n "$DISK" ]; then
-    TIMEOUT=90
-else
-    TIMEOUT=10
-fi
-
+TIMEOUT=${NETBSD_VZ_TIMEOUT:-120}
 case "$TIMEOUT" in
     ''|*[!0-9]*|0)
         echo "error: NETBSD_VZ_TIMEOUT must be a positive integer" >&2
@@ -82,9 +77,12 @@ esac
     echo "error: this proof requires Apple Silicon" >&2
     exit 1
 }
+[ -f "$DISK" ] || {
+    echo "error: EFI disk image is missing: $DISK" >&2
+    exit 1
+}
 
-/bin/mkdir -p "$RUNNER_ROOT"
-
+/bin/mkdir -p "$RUNNER_ROOT" "$RUN_ROOT"
 if [ ! -x "$RUNNER" ] || [ "$RUNNER_SOURCE" -nt "$RUNNER" ] ||
    [ "$ENTITLEMENTS" -nt "$RUNNER" ]; then
     echo "Compiling and signing the Virtualization.framework runner..."
@@ -107,12 +105,12 @@ fi
 
 ATTACHED_DISK=$DISK
 DISPOSABLE_DISK=
+DISPOSABLE_STATE=
 TRANSCRIPT=
 cleanup()
 {
-    if [ -n "$DISPOSABLE_DISK" ]; then
-        /bin/rm -f -- "$DISPOSABLE_DISK"
-    fi
+    [ -z "$DISPOSABLE_DISK" ] || /bin/rm -f -- "$DISPOSABLE_DISK"
+    [ -z "$DISPOSABLE_STATE" ] || /bin/rm -rf -- "$DISPOSABLE_STATE"
 }
 interrupted()
 {
@@ -122,46 +120,41 @@ interrupted()
 trap cleanup EXIT
 trap interrupted HUP INT TERM
 
-if [ -n "$DISK" ]; then
-    if [ "$DISK" = "$DEFAULT_DISK" ]; then
-        [ -f "$DISK" ] || {
-            echo "error: disk image is missing: $DISK" >&2
-            exit 1
-        }
-        /bin/mkdir -p "$RUN_ROOT"
-        DISPOSABLE_DISK="$RUN_ROOT/netbsd-vz-root.$$.raw"
-        /bin/rm -f -- "$DISPOSABLE_DISK"
-        /bin/cp -c "$DISK" "$DISPOSABLE_DISK"
-        ATTACHED_DISK=$DISPOSABLE_DISK
-        echo "Booting a disposable clone of $DISK" >&2
-    elif [ ! -f "$DISK" ]; then
-        echo "error: disk image is missing or not a regular file: $DISK" >&2
-        exit 1
-    fi
+if [ "$DISK" = "$DEFAULT_DISK" ]; then
+    DISPOSABLE_DISK="$RUN_ROOT/netbsd-vz.$$.raw"
+    /bin/rm -f -- "$DISPOSABLE_DISK"
+    /bin/cp -c "$DISK" "$DISPOSABLE_DISK"
+    ATTACHED_DISK=$DISPOSABLE_DISK
+    echo "Booting a disposable clone of $DISK" >&2
 fi
 
-set -- --timeout "$TIMEOUT"
-[ -z "$ATTACHED_DISK" ] || set -- "$@" --disk "$ATTACHED_DISK"
+if [ -z "$EFI_STATE" ]; then
+    DISPOSABLE_STATE="$RUN_ROOT/efi-state.$$"
+    /bin/rm -rf -- "$DISPOSABLE_STATE"
+    EFI_STATE=$DISPOSABLE_STATE
+fi
+/bin/mkdir -p "$EFI_STATE"
+
+set -- --timeout "$TIMEOUT" --disk "$ATTACHED_DISK" --efi-state "$EFI_STATE"
 [ "$NETWORK" -eq 0 ] || set -- "$@" --network
 [ "$SMOKE" -eq 0 ] || set -- "$@" --smoke
-set -- "$@" "$IMAGE"
+[ -z "$PERSISTENCE" ] || set -- "$@" "$PERSISTENCE"
 
 if [ "$SMOKE" -eq 1 ]; then
-    /bin/mkdir -p "$RUN_ROOT"
     TRANSCRIPT="$RUN_ROOT/smoke-console-$$.log"
     if NETBSD_VZ_TRANSCRIPT="$TRANSCRIPT" "$RUNNER" "$@"; then
-        status=0
+        RUN_STATUS=0
         /bin/rm -f -- "$TRANSCRIPT"
     else
-        status=$?
+        RUN_STATUS=$?
         echo "Smoke console transcript preserved at $TRANSCRIPT" >&2
     fi
 else
     if "$RUNNER" "$@"; then
-        status=0
+        RUN_STATUS=0
     else
-        status=$?
+        RUN_STATUS=$?
     fi
 fi
 
-exit "$status"
+exit "$RUN_STATUS"
