@@ -1,244 +1,204 @@
 # NetBSD 11 through generic EFI on Apple Virtualization.framework
 
-## 1. Result
+## 1. Boot contract
 
-The supported boot contract is now:
+The POC has one boot path:
 
-    VZEFIBootLoader
-            |
-            v
-    stock bootaa64.efi on a FAT32 ESP
-            |
-            v
-    stock GENERIC64 configuration and ACPI handoff
-            |
-            v
-    FFS root at NAME=netbsd-root
+```text
+VZEFIBootLoader
+        |
+        v
+stock bootaa64.efi on a FAT32 ESP
+        |
+        v
+stock GENERIC64 configuration and ACPI handoff
+        |
+        v
+FFS root at NAME=netbsd-root
+```
 
-This is materially closer to normal NetBSD hardware and virtualization than
-the earlier direct-Image experiment. It removes all VZ-specific loader,
-AArch64 bootstrap, FDT-console, raw-Image padding, forced-viocon-console, and
-custom-kernel-configuration changes.
+The stock `bootaa64.efi` is copied unchanged from the SHA-512-verified
+NetBSD 11.0 base set. The kernel is built from the unmodified `GENERIC64`
+configuration after applying exactly three generic Virtio driver patches.
 
-The remaining source delta is three generic Virtio fixes:
+There is no `VZLinuxBootLoader`, raw AArch64 Image, VZ64 kernel
+configuration, direct-boot FDT patch, forced kernel console, initrd, boot
+mode selector, or fallback to [the earlier direct-boot
+implementation](https://tbarabosch.com/porting-netbsd-to-apple-vz/).
 
-1. enable PCI memory decoding for modern Virtio PCI BARs;
-2. wait until a Virtio 1.0 reset completes;
-3. negotiate and apply the Virtio network MTU feature.
+## 2. Why EFI is the better contract than our earlier direct-boot work
 
-The stock bootaa64.efi binary is copied unchanged from the SHA-512-verified
-NetBSD 11.0 base set. The kernel is built from the unmodified GENERIC64
-configuration after applying only those three driver patches.
+EFI enters NetBSD through the same firmware boundary used on normal arm64
+systems. Firmware loads `bootaa64.efi` from standard removable-media paths,
+the loader reads the kernel from the filesystem, and ACPI describes CPUs,
+interrupts, timers, PCI, and Virtio devices to `GENERIC64`. This exercises
+the stock loader-to-kernel interface instead of bypassing it.
 
-## 2. VZ and NetBSD device contract
+[Our earlier direct-boot
+work](https://tbarabosch.com/porting-netbsd-to-apple-vz/) used
+`VZLinuxBootLoader` and placed more of the boot contract in this project. The
+host had to supply a raw kernel Image and FDT, while NetBSD needed
+corresponding AArch64 bootstrap, FDT console, Image-padding, and VZ64
+configuration changes. Those changes were specific to this hosting
+arrangement and therefore poor upstream candidates.
 
-The runner configures the generic VZ platform, minimum allowed CPU count,
-512 MiB RAM, EFI variable storage, a 1280 by 720 Virtio GPU, Virtio serial,
-Virtio entropy, one writable Virtio block disk, and optional Virtio NAT.
+The generic EFI platform also gives the VM a stable machine identifier and
+EFI variable store. Disk contents, firmware state, and ACPI device discovery
+remain separate, conventional interfaces. That makes the guest image closer
+to a normal bootable NetBSD disk and keeps platform policy out of the kernel.
 
-    VZ generic platform
-      |
-      +-- EFI + GOP ---------> bootaa64.efi
-      |
-      +-- ACPI --------------> CPU, GICv3, timer, PCI host bridge
-      |
-      +-- Virtio PCI --------> GPU, console, block, entropy
-      |                         and optional network
-      |
-      +-- GPT disk ----------> ESP + NAME=netbsd-root
-      |
-      +-- ttyVI00 -----------> headless login and smoke automation
+EFI is not universally better. It adds an EFI System Partition, firmware
+state, and a Virtio GPU for GOP, and firmware plus loader work can make boot
+slower. The earlier approach remains attractive for firmware-free appliances
+or very small boot chains. EFI is superior for this POC because its governing
+goal is to minimize the NetBSD upstream delta: only generic Virtio fixes
+remain.
 
-Observed NetBSD attachments include acpifdt, acpi, gicvthree, armgtmr,
-acpipchb, pci, viocon, ld, viogpu, viornd, and, when requested, vioif.
+## 3. VZ and NetBSD device contract
+
+The runner configures the generic VZ platform, the minimum allowed CPU
+count, 512 MiB RAM, EFI variable storage, a 1280 by 720 Virtio GPU, Virtio
+serial, Virtio entropy, one writable Virtio block disk, and optional Virtio
+NAT.
+
+```text
+VZ generic platform
+  |
+  +-- EFI + GOP ---------> bootaa64.efi
+  |
+  +-- ACPI --------------> CPU, GICv3, timer, PCI host bridge
+  |
+  +-- Virtio PCI --------> GPU, console, block, entropy
+  |                         and optional network
+  |
+  +-- GPT disk ----------> ESP + NAME=netbsd-root
+  |
+  +-- ttyVI00 -----------> interactive headless login
+```
 
 EFI and the kernel choose GOP as the kernel console. The VZ Virtio serial
 device is not an EFI console, so headless output begins when getty starts on
-/dev/ttyVI00. Smoke mode immediately runs dmesg after login to recover the
-early kernel log without changing NetBSD's console code.
+`/dev/ttyVI00`. The early kernel log remains available through `dmesg` after
+login without changing NetBSD's console code.
 
-## 3. Reproducible native build
+## 4. Reproducible build
 
-scripts/build.sh downloads the official NetBSD 11.0 src, gnusrc, sharesrc,
-and syssrc sets and verifies pinned SHA-512 digests before extraction. Patch
-content is part of the source-cache fingerprint.
+`scripts/build.sh` downloads the official NetBSD 11.0 `src`, `gnusrc`,
+`sharesrc`, and `syssrc` sets and verifies pinned SHA-512 digests before
+extraction. Patch content is part of the source-cache fingerprint.
 
-NetBSD build.sh creates host-native AArch64 cross-tools, then runs:
+NetBSD `build.sh` creates host-native AArch64 cross-tools, then runs:
 
-    build.sh -U -u -m evbarm -a aarch64 kernel=GENERIC64
+```sh
+build.sh -U -u -m evbarm -a aarch64 kernel=GENERIC64
+```
 
 The resulting ELF kernel is copied to:
 
-    .build/out/netbsd-GENERIC64
+```text
+.build/out/netbsd-GENERIC64
+```
 
-No AArch64 raw Image is published or padded. No VZ64 configuration exists.
+No raw Image is published or padded.
 
-## 4. Why the three patches remain
+## 5. Remaining NetBSD patches
+
+The EFI build applies the files in `patches/` to pristine NetBSD 11.0 source
+in this order:
+
+```text
+virtio-pci-memory.patch
+virtio-reset.patch
+vioif-mtu.patch
+```
 
 ### PCI memory decoding
 
-Apple's modern Virtio capabilities are exposed through memory BARs.
-virtio_pci_attach previously enabled bus mastering and I/O decoding but not
-PCI_COMMAND_MEM_ENABLE. The patch enables memory decoding alongside the
+Modern Virtio capabilities are exposed through memory BARs.
+`virtio_pci_attach` enabled bus mastering and I/O decoding but not
+`PCI_COMMAND_MEM_ENABLE`; the patch enables memory decoding alongside the
 existing bits.
 
 ### Reset completion
 
 Virtio 1.0 requires a driver that writes device status zero to wait until a
-later read returns zero. VZ completes reset asynchronously. The patch polls
-the status byte after reset before queue configuration continues.
+later read returns zero. The patch polls the status byte after reset before
+queue configuration continues.
 
 ### Network MTU
 
-VZ NAT advertises VIRTIO_NET_F_MTU. The NetBSD 11 vioif driver did not accept
-that bit, so VZ rejected FEATURES_OK and the network device did not attach.
-The patch negotiates the feature and applies the advertised MTU.
+VZ NAT advertises `VIRTIO_NET_F_MTU`. The patch negotiates the feature and
+applies the device's advertised MTU in `vioif`.
 
-All three changes are generic driver corrections; none identifies Apple VZ
-or alters EFI, ACPI, AArch64 bootstrap, or console code.
-
-## 5. Pristine-source patch matrix
-
-The EFI path was first evaluated from an isolated pristine NetBSD 11.0 tree.
-The earlier direct-boot patches were explicitly absent.
-
-    Patch set                         Offline result       NAT result
-    -------------------------------- -------------------- --------------------
-    none                              no ttyVI00 login     not tested
-    PCI memory only                   no ttyVI00 login     not tested
-    PCI memory + reset wait           passed              failed to reach login
-    PCI memory + reset + MTU           passed              passed
-
-The progression establishes the two Virtio PCI changes as the working
-storage/console boundary and the MTU change as the additional network
-requirement. There was no reason to introduce any loader, ACPI, FDT,
-bootstrap, console, or VZ-specific kernel patch.
+All three are generic driver corrections. None identifies Apple VZ or
+alters EFI, ACPI, AArch64 bootstrap, FDT handling, or console selection.
 
 ## 6. EFI disk format
 
-scripts/build-disk.sh downloads the official NetBSD 11.0 evbarm-aarch64 base
-and etc sets, verifies their pinned SHA-512 hashes, applies the three-file
-root overlay, and builds a deterministic 1,088 MiB RAW disk.
+`scripts/build-disk.sh` downloads the official NetBSD 11.0
+evbarm-aarch64 `base` and `etc` sets, verifies their pinned SHA-512 hashes,
+applies a three-file root overlay, and builds a 1,088 MiB RAW disk.
 
-    LBA 0                  protective MBR
-    LBA 1                  primary GPT header
-    LBA 2..33              primary GPT entries
-    LBA 34..2047           alignment gap
-    LBA 2048..133119       partition 1, 64 MiB FAT32 ESP
-                           GPT label: netbsd-esp
-                           /EFI/BOOT/BOOTAA64.EFI
-                           /EFI/BOOT/boot.cfg
-    LBA 133120..2226175    partition 2, FFSv1
-                           GPT label: netbsd-root
-                           FFS label: netbsd-root
-                           /netbsd is GENERIC64
-    final 2048 sectors     GPT reservation and backup GPT
+```text
+LBA 0                  protective MBR
+LBA 1                  primary GPT header
+LBA 2..33              primary GPT entries
+LBA 34..2047           alignment gap
+LBA 2048..133119       partition 1, 64 MiB FAT32 ESP
+                       GPT label: netbsd-esp
+                       /EFI/BOOT/BOOTAA64.EFI
+                       /EFI/BOOT/boot.cfg
+LBA 133120..2226175    partition 2, FFSv1
+                       GPT label: netbsd-root
+                       FFS label: netbsd-root
+                       /netbsd is GENERIC64
+final 2048 sectors     GPT reservation and backup GPT
+```
 
-boot.cfg requests:
+`boot.cfg` requests:
 
-    boot netbsd -v root=NAME=netbsd-root
+```text
+boot netbsd -v root=NAME=netbsd-root
+```
 
 The root overlay contains:
 
-    /etc/fstab    named FFS root
-    /etc/rc.conf  services off; conditional vioif DHCP
-    /etc/ttys     ttyVI00 getty enabled, console getty disabled
-
-The proof image keeps the release set's empty root password for serial
-automation. It must not be treated as a production image.
+```text
+/etc/fstab    named FFS root
+/etc/rc.conf  services off; conditional vioif DHCP
+/etc/ttys     ttyVI00 getty enabled, console getty disabled
+```
 
 ## 7. Runner and state behavior
 
-The Swift runner has one boot path. It requires a disk and an EFI-state
-directory, creates or reloads a VZGenericMachineIdentifier and
-VZEFIVariableStore there, configures VZEFIBootLoader, and starts the VM.
-There is no boot selector, kernel path, command-line override, initrd, or
-VZLinuxBootLoader.
+The Swift runner requires a disk and an EFI-state directory. It creates or
+reloads a `VZGenericMachineIdentifier` and `VZEFIVariableStore`, configures
+`VZEFIBootLoader`, connects the host terminal to Virtio serial, and runs the
+VM until the guest stops or the configured timeout expires.
 
-scripts/run.sh creates disposable EFI state by default. It also copy-on-write
-clones the default disk before boot, so normal interactive and smoke runs do
-not mutate the published image. Passing another DISK attaches that file
-directly for intentional persistence.
+`scripts/run.sh` creates temporary EFI state by default. It also
+copy-on-write clones the default disk before boot, so the published image is
+not modified. A caller-supplied disk is attached directly, and a
+caller-supplied EFI-state directory is reused.
 
-Smoke mode implements a bounded serial state machine:
+Networking is deliberately opt-in. `make run-network` adds one Virtio
+network device with `VZNATNetworkDeviceAttachment`; `make run` presents no
+network device.
 
-    wait for login
-      -> log in as root
-      -> replay dmesg
-      -> require EFI/ACPI and Virtio attachment evidence
-      -> require userspace marker
-      -> optional DHCP, route, gateway ping, and 8.8.8.8 ping
-      -> request shutdown -p
-      -> observe shutdown hooks and VZ stopped state
+## 8. Limits
 
-The stock kernel sends the final VFS unmount line to GOP rather than
-ttyVI00. The automated clean-shutdown evidence is therefore the completed
-shutdown-hook marker followed by VZ's stopped state. The persistence test
-then reboots the same disk, recovers a synced marker, and shuts it down
-again, proving the prior disk remains consistently reusable without a
-console patch.
-
-## 8. Acceptance evidence
-
-The NetBSD 11.0 gate completed:
-
-- five consecutive cold boots, each with a new machine identifier and EFI
-  variable store;
-- offline smoke with no vioif attachment;
-- NAT smoke with vioif, carrier, DHCP IPv4, default route, gateway ping, and
-  public ping;
-- automated login and command execution on ttyVI00;
-- ACPI, GICv3, generic timer, PCI, console, GPU, storage, entropy, and named
-  root attachment;
-- root mounted from NAME=netbsd-root;
-- two-boot disk and EFI-state persistence with a recovered marker;
-- shutdown hooks completed and VZ reached the stopped state on every accepted
-  smoke boot.
-
-Recorded non-blocking measurements from the accepted host:
-
-    Artifact or run                    Measurement
-    ---------------------------------  ----------------
-    NetBSD 11.0 GENERIC64 ELF          18,267,080 bytes
-    EFI RAW disk                       1,140,850,688 bytes
-    direct-boot baseline smoke         about 15 seconds
-    EFI offline smoke                  about 25 seconds
-    EFI NAT smoke                      about 33 seconds
-
-These are end-to-end runner times, not firmware-only benchmarks.
-
-## 9. NetBSD-current upstream check
-
-The same three patch files applied without edits to the official
-NetBSD-current source snapshot published 22 August 2026. That snapshot
-identified itself as NetBSD 11.99.7. Its relevant published component
-SHA-512 values were:
-
-    top-level  08cd1b8800f55f51363e5dd5e8e5896eb55657acce5b4d1fe17df094e1e3f82c6a6d8761bed1c9d23c586c147838748bed32737306ed08e725020c3955fb9f06
-    share      3d3736bca5603d9b6e0f87c54cd9a31758b307001f40f4b6858fbaba4ea03fa2c964120c0bc20ad435fb2657ff7cc5a4693e004cc43e84949ba4f9e2443350c5
-    sys        936010d3927e1436cb41a542d65b9746949866116bf3a10565f60c7f48fb8775c734bbab9cca68f7f6a2e4526253bc46ba4fac74bd66219cae1a5d2dd76c2952
-
-Stock current GENERIC64 built successfully as a 19,926,424-byte ELF. A disk
-containing that kernel and the unchanged stock NetBSD 11.0 bootaa64.efi and
-userland passed both offline and NAT smoke tests on VZ. This validates the
-patches against current source and runtime behavior, rather than only
-checking whether patch hunks apply.
-
-## 10. Limits
-
-- Headless live output starts at ttyVI00 getty; EFI and early kernel output
-  are on GOP.
-- VZ NAT is opt-in. Bridging, inbound forwarding, DNS validation, suspend,
-  directory sharing, and secondary disks are outside this proof.
-- Network smoke depends on outbound ICMP to 8.8.8.8.
+- Headless live output starts at the `ttyVI00` getty; EFI and early kernel
+  output are on GOP.
+- VZ NAT is opt-in. Bridging, inbound forwarding, directory sharing,
+  suspend, secondary disks, and remote services are outside this POC.
 - The image has an empty root password and is for isolated testing only.
 
-## 11. Primary references
+## 9. Primary references
 
+- [Earlier direct-boot NetBSD-on-VZ work](https://tbarabosch.com/porting-netbsd-to-apple-vz/)
 - [NetBSD source build procedure](https://www.netbsd.org/docs/guide/en/chap-build.html)
 - [NetBSD 11.0 source sets](https://cdn.netbsd.org/pub/NetBSD/NetBSD-11.0/source/sets/)
 - [NetBSD 11.0 evbarm-aarch64 sets](https://cdn.netbsd.org/pub/NetBSD/NetBSD-11.0/evbarm-aarch64/binary/sets/)
-- [NetBSD-current source snapshots](https://cdn.netbsd.org/pub/NetBSD/NetBSD-current/tar_files/)
 - [Virtio 1.0 specification](https://docs.oasis-open.org/virtio/virtio/v1.0/virtio-v1.0.html)
 - [Apple VZEFIBootLoader](https://developer.apple.com/documentation/virtualization/vzefibootloader)
 - [Apple VZGenericPlatformConfiguration](https://developer.apple.com/documentation/virtualization/vzgenericplatformconfiguration)

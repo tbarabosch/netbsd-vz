@@ -7,9 +7,6 @@ The EFI build applies exactly three generic Virtio fixes to pristine NetBSD
     virtio-reset.patch
     vioif-mtu.patch
 
-The same files apply without modification to the tested NetBSD-current
-11.99.7 snapshot and pass offline and NAT runtime smoke tests there.
-
 ## virtio-pci-memory.patch
 
 Enables PCI_COMMAND_MEM_ENABLE when virtio_pci attaches, alongside the
@@ -35,5 +32,5 @@ kernel-console selection, or an Apple-specific platform. There is no VZ64
 kernel configuration. The build uses stock GENERIC64 and the serial login is
 provided by a normal getty on ttyVI00.
 
-See [the technical account](../docs/TECHNICAL.md) for the pristine-source
-matrix, current snapshot identifiers, and acceptance evidence.
+See [the technical account](../docs/TECHNICAL.md) for the EFI boot contract
+and disk layout.

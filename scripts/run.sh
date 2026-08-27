@@ -13,14 +13,12 @@ RUN_ROOT="$WORK_ROOT/run"
 
 usage()
 {
-    echo "usage: $0 [--disk NETBSD.RAW] [--efi-state DIR] [--network] [--smoke] [--persistence-write|--persistence-read]" >&2
+    echo "usage: $0 [--disk NETBSD.RAW] [--efi-state DIR] [--network]" >&2
 }
 
 DISK=$DEFAULT_DISK
 EFI_STATE=
-SMOKE=0
 NETWORK=0
-PERSISTENCE=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --disk)
@@ -33,20 +31,8 @@ while [ "$#" -gt 0 ]; do
             EFI_STATE=$2
             shift 2
             ;;
-        --smoke)
-            SMOKE=1
-            shift
-            ;;
         --network)
             NETWORK=1
-            shift
-            ;;
-        --persistence-write|--persistence-read)
-            [ -z "$PERSISTENCE" ] || {
-                echo "error: only one persistence probe may be selected" >&2
-                exit 1
-            }
-            PERSISTENCE=$1
             shift
             ;;
         -h|--help)
@@ -106,7 +92,6 @@ fi
 ATTACHED_DISK=$DISK
 DISPOSABLE_DISK=
 DISPOSABLE_STATE=
-TRANSCRIPT=
 cleanup()
 {
     [ -z "$DISPOSABLE_DISK" ] || /bin/rm -f -- "$DISPOSABLE_DISK"
@@ -137,24 +122,5 @@ fi
 
 set -- --timeout "$TIMEOUT" --disk "$ATTACHED_DISK" --efi-state "$EFI_STATE"
 [ "$NETWORK" -eq 0 ] || set -- "$@" --network
-[ "$SMOKE" -eq 0 ] || set -- "$@" --smoke
-[ -z "$PERSISTENCE" ] || set -- "$@" "$PERSISTENCE"
 
-if [ "$SMOKE" -eq 1 ]; then
-    TRANSCRIPT="$RUN_ROOT/smoke-console-$$.log"
-    if NETBSD_VZ_TRANSCRIPT="$TRANSCRIPT" "$RUNNER" "$@"; then
-        RUN_STATUS=0
-        /bin/rm -f -- "$TRANSCRIPT"
-    else
-        RUN_STATUS=$?
-        echo "Smoke console transcript preserved at $TRANSCRIPT" >&2
-    fi
-else
-    if "$RUNNER" "$@"; then
-        RUN_STATUS=0
-    else
-        RUN_STATUS=$?
-    fi
-fi
-
-exit "$RUN_STATUS"
+"$RUNNER" "$@"
