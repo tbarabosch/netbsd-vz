@@ -5,15 +5,29 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 WORK_ROOT="$REPO_ROOT/.build"
 DOWNLOAD_ROOT="$WORK_ROOT/downloads"
-DISK_ROOT="$WORK_ROOT/disk"
+AGENT_DISK=${NETBSD_VZ_AGENT_DISK:-0}
+case "$AGENT_DISK" in
+    0|1) ;;
+    *) echo "error: NETBSD_VZ_AGENT_DISK must be 0 or 1" >&2; exit 1 ;;
+esac
+if [ "$AGENT_DISK" -eq 1 ]; then
+    DISK_ROOT="$WORK_ROOT/agent-disk"
+    OUTPUT_NAME=netbsd-vz-agent.raw
+    OVERLAY_ROOT="$REPO_ROOT/agent/rootfs-overlay"
+    AGENT_BINARY="$WORK_ROOT/out/netbsd-vz-agent"
+else
+    DISK_ROOT="$WORK_ROOT/disk"
+    OUTPUT_NAME=netbsd-vz.raw
+    OVERLAY_ROOT="$REPO_ROOT/rootfs-overlay"
+    AGENT_BINARY=
+fi
 STAGING_ROOT="$DISK_ROOT/root"
 ESP_ROOT="$DISK_ROOT/esp"
 WORK_DIR="$DISK_ROOT/work"
 TOOLS_ROOT="$WORK_ROOT/tools/bin"
 OUTPUT_ROOT="$WORK_ROOT/out"
 OUTPUT_KERNEL="$OUTPUT_ROOT/netbsd-GENERIC64"
-OUTPUT_DISK="$OUTPUT_ROOT/netbsd-vz.raw"
-OVERLAY_ROOT="$REPO_ROOT/rootfs-overlay"
+OUTPUT_DISK="$OUTPUT_ROOT/$OUTPUT_NAME"
 BOOT_CONFIG="$REPO_ROOT/efi/boot.cfg"
 SPEC_FILE="$DISK_ROOT/root.mtree"
 STATE_FILE="$DISK_ROOT/.root-input-fingerprint"
@@ -115,8 +129,10 @@ require_executable "$TOOLS_ROOT/nbmakefs"
 require_executable /usr/bin/curl
 require_executable /usr/bin/shasum
 require_executable /usr/bin/tar
+[ "$AGENT_DISK" -eq 0 ] || require_executable "$TOOLS_ROOT/nbpwd_mkdb"
 [ -f "$OUTPUT_KERNEL" ] || fail "GENERIC64 is missing; run make build first"
 [ -f "$BOOT_CONFIG" ] || fail "EFI boot configuration is missing: $BOOT_CONFIG"
+[ "$AGENT_DISK" -eq 0 ] || [ -x "$AGENT_BINARY" ] || fail "agent is missing; run make agent first"
 
 for overlay in fstab rc.conf ttys; do
     [ -f "$OVERLAY_ROOT/etc/$overlay" ] || fail "root overlay is missing etc/$overlay"
@@ -127,11 +143,17 @@ fetch_archive base.tar.xz "$BASE_SHA512" "$BASE_ARCHIVE" "NetBSD evbarm-aarch64 
 fetch_archive etc.tar.xz "$ETC_SHA512" "$ETC_ARCHIVE" "NetBSD evbarm-aarch64 etc set"
 
 OVERLAY_FINGERPRINT=$(
-    for overlay in fstab rc.conf ttys; do
-        printf '%s  etc/%s\n' "$(sha512 "$OVERLAY_ROOT/etc/$overlay")" "$overlay"
-    done | /usr/bin/shasum -a 512 | /usr/bin/awk '{print $1}'
+    {
+        for overlay in fstab rc.conf ttys; do
+            printf '%s  etc/%s\n' "$(sha512 "$OVERLAY_ROOT/etc/$overlay")" "$overlay"
+        done
+        if [ "$AGENT_DISK" -eq 1 ]; then
+            printf '%s  etc/rc.d/netbsd_vz_agent\n' "$(sha512 "$OVERLAY_ROOT/etc/rc.d/netbsd_vz_agent")"
+            printf '%s  usr/sbin/netbsd-vz-agent\n' "$(sha512 "$AGENT_BINARY")"
+        fi
+    } | /usr/bin/shasum -a 512 | /usr/bin/awk '{print $1}'
 )
-INPUT_FINGERPRINT=$(printf '%s\n' "$NETBSD_VERSION" "$BASE_SHA512" "$ETC_SHA512" "$OVERLAY_FINGERPRINT" |
+INPUT_FINGERPRINT=$(printf '%s\n' "$NETBSD_VERSION" "$BASE_SHA512" "$ETC_SHA512" "$AGENT_DISK" "$OVERLAY_FINGERPRINT" |
     /usr/bin/shasum -a 512 | /usr/bin/awk '{print $1}')
 
 CACHED_FINGERPRINT=
@@ -153,9 +175,20 @@ if [ "$CACHED_FINGERPRINT" != "$INPUT_FINGERPRINT" ]; then
     for overlay in fstab rc.conf ttys; do
         /bin/cp -p "$OVERLAY_ROOT/etc/$overlay" "$STAGING_ROOT/etc/$overlay"
     done
+    if [ "$AGENT_DISK" -eq 1 ]; then
+        /usr/bin/install -m 0555 "$AGENT_BINARY" "$STAGING_ROOT/usr/sbin/netbsd-vz-agent"
+        /usr/bin/install -m 0555 "$OVERLAY_ROOT/etc/rc.d/netbsd_vz_agent" "$STAGING_ROOT/etc/rc.d/netbsd_vz_agent"
+        /usr/bin/sed -E 's/^root:[^:]*:/root:*:/' "$STAGING_ROOT/etc/master.passwd" > "$WORK_DIR/master.passwd"
+        "$TOOLS_ROOT/nbpwd_mkdb" -L -p -d "$STAGING_ROOT" "$WORK_DIR/master.passwd"
+    fi
 
     /bin/cat "$STAGING_ROOT"/etc/mtree/* |
         /usr/bin/sed -E 's/ size=[0-9]+//' > "$SPEC_FILE"
+    if [ "$AGENT_DISK" -eq 1 ]; then
+        printf '%s\n' \
+            './etc/rc.d/netbsd_vz_agent type=file mode=0555 uid=0 gid=0' \
+            './usr/sbin/netbsd-vz-agent type=file mode=0555 uid=0 gid=0' >> "$SPEC_FILE"
+    fi
     (
         cd "$STAGING_ROOT/dev"
         /bin/sh ./MAKEDEV -s all ipty
@@ -173,10 +206,19 @@ done
     fail "device manifest is missing Virtio console nodes"
 /usr/bin/grep -q '^\./dev/dk0[[:space:]]' "$SPEC_FILE" ||
     fail "device manifest is missing dk nodes"
-/usr/bin/grep -q '^root::' "$STAGING_ROOT/etc/master.passwd" ||
-    fail "release set no longer has the expected empty root password"
-/usr/bin/grep -q '^ttyVI00.*on secure' "$STAGING_ROOT/etc/ttys" ||
-    fail "root does not enable ttyVI00"
+if [ "$AGENT_DISK" -eq 1 ]; then
+    /usr/bin/grep -q '^root:\*:' "$STAGING_ROOT/etc/master.passwd" ||
+        fail "agent image does not lock root password login"
+    /usr/bin/grep -q '^ttyVI00.*off secure' "$STAGING_ROOT/etc/ttys" ||
+        fail "agent image unexpectedly enables ttyVI00 login"
+    /usr/bin/grep -q '^ttyVI10.*off secure' "$STAGING_ROOT/etc/ttys" ||
+        fail "agent image unexpectedly enables ttyVI10 login"
+else
+    /usr/bin/grep -q '^root::' "$STAGING_ROOT/etc/master.passwd" ||
+        fail "release set no longer has the expected empty root password"
+    /usr/bin/grep -q '^ttyVI00.*on secure' "$STAGING_ROOT/etc/ttys" ||
+        fail "root does not enable ttyVI00"
+fi
 
 /bin/cp -p "$OUTPUT_KERNEL" "$STAGING_ROOT/netbsd"
 safe_remove "$ESP_ROOT"

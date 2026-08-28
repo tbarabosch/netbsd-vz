@@ -1,0 +1,26 @@
+#!/bin/sh
+# PROVIDE: netbsd_vz_agent
+# REQUIRE: mountcritremote
+# BEFORE: LOGIN
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name=netbsd_vz_agent
+rcvar=$name
+command=/usr/sbin/netbsd-vz-agent
+command_args="-d /dev/ttyVI10"
+pidfile=/var/run/netbsd-vz-agent.pid
+start_cmd=netbsd_vz_agent_start
+
+netbsd_vz_agent_start()
+{
+	echo "Starting ${name}." >/dev/ttyVI00
+	(
+		umask 077
+		"$command" $command_args </dev/null >/dev/ttyVI00 2>&1 &
+		echo $! >"$pidfile"
+	)
+}
+
+load_rc_config $name
+run_rc_command "$1"

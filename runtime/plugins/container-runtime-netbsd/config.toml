@@ -1,0 +1,12 @@
+abstract = "NetBSD Virtualization.framework container runtime"
+author = "netbsd-vz contributors"
+
+[servicesConfig]
+loadAtBoot = false
+runAtLoad = false
+defaultArguments = []
+
+[[servicesConfig.services]]
+type = "runtime"
+description = "Manage one NetBSD EFI virtual machine and its guest-agent processes."
+capabilities = ["runtime-owned-resources"]
