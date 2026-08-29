@@ -5,12 +5,11 @@ Apple Silicon Mac through Virtualization.framework's generic EFI platform.
 It uses the stock NetBSD `bootaa64.efi` loader and stock `GENERIC64` kernel
 configuration.
 
-The repository temporarily contains the NetBSD guest agent, OCI disk
-assembler, and external Apple Container runtime while their contracts are
-validated. They will move to
-[`container-runtime-netbsd`](https://github.com/tbarabosch/container-runtime-netbsd);
-the EFI POC image, runner, console login, RAW-disk tools, patches, and platform
-kit producer remain here.
+The NetBSD guest agent, NVZA protocol, OCI disk assembler, and external Apple
+Container integration live in
+[`container-runtime-netbsd`](https://github.com/tbarabosch/container-runtime-netbsd).
+This repository remains the EFI POC, standalone runner, RAW-disk tooling,
+NetBSD patch set, and platform-kit producer.
 
 The only NetBSD source changes are three generic Virtio fixes: PCI memory
 decoding, reset-completion waiting, and network MTU negotiation. There is no
@@ -54,6 +53,7 @@ hardware.
 ```sh
 make build
 make disk
+make platform-kit
 
 make run
 make run-network
@@ -72,10 +72,7 @@ directory reuses the machine identifier and EFI variable store.
 ```text
 .build/out/netbsd-GENERIC64
 .build/out/netbsd-vz.raw
-.build/out/netbsd-vz-agent
-.build/out/netbsd-vz-agent.raw
-.build/runtime/container-runtime-netbsd
-.build/runtime/netbsd
+.build/out/netbsd-vz-platform-kit-11.0-1-darwin-arm64.tar.xz
 ```
 
 `netbsd-vz.raw` is a 1,088 MiB GPT disk. It contains a 64 MiB FAT32 EFI
@@ -91,63 +88,16 @@ DISK=/absolute/path/netbsd.raw make run
 
 The runner always uses EFI. There is deliberately no boot-mode selector.
 
-## Guest agent and Apple Container runtime
+## Platform kit
 
-Build the separate agent image and runtime, then run the signed standalone
-integration probe:
+`make platform-kit` packages the trusted `GENERIC64` kernel, EFI loader, boot
+configuration, NetBSD cross tools, `nbmakefs`, `nbgpt`, and `nbpwd_mkdb` for the
+external runtime. The published archive and its SHA-512 are available from the
+[`platform-kit-v11.0-1` release](https://github.com/tbarabosch/netbsd-vz/releases/tag/platform-kit-v11.0-1).
 
-```sh
-make build
-make agent-disk
-make runtime
-
-.build/runtime/container-runtime-netbsd probe \
-    --disk "$PWD/.build/out/netbsd-vz-agent.raw" \
-    --state "$PWD/.build/probe" \
-    --timeout 120
-```
-
-The probe boots a CoW disk clone with persistent EFI state and verifies the
-handshake, literal and configured execution, success/nonzero exits, concurrent
-processes, exit/EOF ordering, PTY resize/input/signals, large binary stdio,
-binary file copy, recursive directories, modes, symlinks, and traversal
-rejection. The agent image locks password login, disables gettys and remote
-services, and reserves `/dev/ttyVI10` for the root-owned protocol while
-`/dev/ttyVI00` remains the boot log console.
-
-The runtime builds against Apple Container 1.3.0 commit
-`d6de5694200468d99a61662bfb9bb3aba763e3e5` and Containerization 0.41.0 plus the independently maintained
-[`runtime-owned-resources` compatibility patch](compat/apple-container-runtime-owned-resources.patch).
-The patch makes kernel, initfs, and rootfs optional for a runtime plugin that
-declares this capability and forwards opaque `runtimeData`. An Apple Container
-daemon built from that compatibility checkout is required for the integrated
-CLI; the repository does not replace an installed daemon automatically.
-
-Build the deterministic `netbsd/arm64` base image and platform kit, then install
-the compatible daemon and two local plugins:
-
-```sh
-make platform-kit
-make oci-base
-make install-runtime
-
-container image load --input .build/out/netbsd-oci-netbsd-11.0.tar
-container netbsd create 11 --name demo -- /usr/bin/uname -a
-container start demo
-
-container netbsd run 11 --name one-shot --remove -- \
-    /usr/bin/printf '%s\n' 'hello from NetBSD'
-```
-
-The assembler verifies layer digests and DiffIDs, rejects unsafe or unsupported
-archive members, applies OCI whiteouts and metadata, injects only trusted
-runtime assets, and caches immutable deterministic GPT/ESP/FFSv1 disks. The
-public CLI accepts OCI images only; the standalone probe retains `--disk` for
-development and regression testing.
-
-See [docs/AGENT-RUNTIME.md](docs/AGENT-RUNTIME.md) for the architecture,
-supported routes, transport behavior, and v1 limitations. The wire contract is
-specified in [protocol/PROTOCOL.md](protocol/PROTOCOL.md).
+Container lifecycle, OCI base-image, guest-agent, and NVZA documentation now
+belongs to
+[`container-runtime-netbsd`](https://github.com/tbarabosch/container-runtime-netbsd).
 
 ## Console and security
 
